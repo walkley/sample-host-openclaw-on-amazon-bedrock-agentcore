@@ -102,6 +102,7 @@ class FargateStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                     "bedrock:Converse",
                     "bedrock:ConverseStream",
+                    "bedrock-agentcore:InvokeAgentRuntime",
                     "bedrock-agentcore:InvokeRuntime",
                     "bedrock-agentcore:InvokeRuntimeEndpoint",
                 ],
@@ -154,6 +155,10 @@ class FargateStack(Stack):
             memory_limit_mib=memory,
             task_role=task_role,
             execution_role=execution_role,
+            runtime_platform=ecs.RuntimePlatform(
+                cpu_architecture=ecs.CpuArchitecture.ARM64,
+                operating_system_family=ecs.OperatingSystemFamily.LINUX,
+            ),
         )
 
         container = task_def.add_container(
@@ -169,6 +174,7 @@ class FargateStack(Stack):
                 "NODE_OPTIONS": "--max-old-space-size=768",
                 "AGENTCORE_RUNTIME_ID": runtime_id,
                 "AGENTCORE_RUNTIME_ENDPOINT_ID": runtime_endpoint_id,
+                "AGENTCORE_RUNTIME_ARN": f"arn:aws:bedrock-agentcore:{Stack.of(self).region}:{Stack.of(self).account}:agent-runtime/{runtime_id}",
                 "AGENTCORE_MEMORY_ID": memory_id,
                 "PROXY_MODE": self.node.try_get_context("proxy_mode") or "bedrock-direct",
                 "BEDROCK_MODEL_ID": self.node.try_get_context("default_model_id") or "au.anthropic.claude-sonnet-4-6",
@@ -234,8 +240,16 @@ class FargateStack(Stack):
             ),
         )
         # Restrict to CloudFront origin-facing IPs only (managed prefix list)
+        # CloudFront origin-facing IP managed prefix list (region-specific)
+        # us-west-2: pl-82a045eb, ap-southeast-2: pl-b8a742d1
+        cf_prefix_list = {
+            "us-west-2": "pl-82a045eb",
+            "ap-southeast-2": "pl-b8a742d1",
+            "us-east-1": "pl-3b927c52",
+        }.get(Stack.of(self).region, "pl-82a045eb")
+
         self.public_alb.connections.allow_from(
-            ec2.Peer.prefix_list("pl-b8a742d1"),
+            ec2.Peer.prefix_list(cf_prefix_list),
             ec2.Port.tcp(80),
             "Allow HTTP from CloudFront origin-facing IPs only",
         )
@@ -315,8 +329,9 @@ class FargateStack(Stack):
                     id="AwsSolutions-ECS2",
                     reason="Environment variables (AWS_REGION, GATEWAY_TOKEN_SECRET_ID, "
                     "AGENTCORE_RUNTIME_ID, AGENTCORE_RUNTIME_ENDPOINT_ID, "
-                    "AGENTCORE_MEMORY_ID, PROXY_MODE, COGNITO_USER_POOL_ID, "
-                    "COGNITO_CLIENT_ID, COGNITO_PASSWORD_SECRET_ID) contain only "
+                    "AGENTCORE_RUNTIME_ARN, AGENTCORE_MEMORY_ID, PROXY_MODE, "
+                    "COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, "
+                    "COGNITO_PASSWORD_SECRET_ID) contain only "
                     "non-sensitive configuration. Actual secret values are fetched "
                     "at runtime from Secrets Manager by the entrypoint script.",
                 ),

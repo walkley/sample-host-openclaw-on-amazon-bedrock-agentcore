@@ -19,7 +19,7 @@ WORKDIR /app
 # Install AWS SDK for Bedrock Runtime, AgentCore, and Cognito (used by the proxy adapter)
 RUN cd /app && npm init -y > /dev/null 2>&1 && \
     npm install @aws-sdk/client-bedrock-runtime \
-                @aws-sdk/client-bedrock-agent-runtime \
+                @aws-sdk/client-bedrock-agentcore \
                 @aws-sdk/client-cognito-identity-provider
 
 # Copy the Bedrock proxy adapter and IPv4 DNS patch

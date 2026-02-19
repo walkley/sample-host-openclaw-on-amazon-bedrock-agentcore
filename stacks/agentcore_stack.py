@@ -207,7 +207,7 @@ class AgentCoreStack(Stack):
             ),
             role_arn=self.agent_role.role_arn,
             environment_variables={
-                "DEFAULT_MODEL_ID": "au.anthropic.claude-sonnet-4-6",
+                "DEFAULT_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                 "AWS_REGION": region,
                 "AGENTCORE_MEMORY_ID": self.memory.attr_memory_id,
             },
@@ -226,6 +226,8 @@ class AgentCoreStack(Stack):
             name="openclaw_agent_live",
             description="Production endpoint for OpenClaw agent",
         )
+        # Explicit dependency: Runtime must reach READY before Endpoint creation
+        self.runtime_endpoint.add_dependency(self.runtime)
 
         # --- Expose outputs for downstream stacks -------------------------
         self.runtime_id = self.runtime.attr_agent_runtime_id
