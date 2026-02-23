@@ -922,4 +922,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(
     "[contract] Endpoints: GET /ping, POST /invocations {action: chat|status|warmup|cron}",
   );
+  console.log("[contract] Endpoints: GET /ping, POST /invocations {action: chat|status}");
 });

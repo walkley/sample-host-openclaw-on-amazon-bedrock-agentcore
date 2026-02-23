@@ -81,6 +81,46 @@ This solution applies **defense-in-depth** across network, application, identity
 
 See [SECURITY.md](SECURITY.md) for the complete security architecture.
 
+### Why S3 Workspace Sync?
+
+AgentCore Runtime is a **serverless** platform — each user session runs in an ephemeral microVM that is created on demand and destroyed when idle. This creates a fundamental challenge: OpenClaw stores its state on the local filesystem in the `.openclaw/` directory, including configuration (`openclaw.json`), conversation memory (`MEMORY.md`), user profiles (`USER.md`, `IDENTITY.md`), agent instructions (`AGENTS.md`, `SOUL.md`), and tool output files. Without persistence, all of this is lost every time a session terminates.
+
+The solution is **S3-backed workspace sync**:
+
+- **On session start**: The contract server restores the user's `.openclaw/` directory from S3 before starting OpenClaw. This gives the agent access to the user's full conversation history, preferences, and prior context as if the session had never ended.
+- **Periodically (every 5 min)**: A background timer saves the workspace back to S3, so in-progress state is protected against unexpected failures.
+- **On session shutdown (SIGTERM)**: A final save runs within the 15-second grace period AgentCore provides before terminating the microVM, capturing all state changes from the session.
+
+Each user's workspace is isolated under a unique S3 prefix (`{namespace}/.openclaw/`) derived from their channel identity (e.g., `telegram_6087229962`). Large files (>10MB), build artifacts (`node_modules/`), and cache directories are excluded from sync to keep storage costs low and restore times fast.
+
+This design lets the system behave like a persistent server from the user's perspective (continuous conversation history, remembering preferences across sessions) while benefiting from serverless economics (no idle compute costs, automatic scaling, per-user isolation).
+
+### Security
+
+This solution applies defense-in-depth across the network, application, identity, and data layers:
+
+**Network isolation** — AgentCore containers run in private VPC subnets with no direct internet exposure. All AWS service access goes through VPC endpoints (S3, Secrets Manager, Bedrock, ECR, CloudWatch, STS, DynamoDB). The only public entry point is the API Gateway HTTP API.
+
+**Webhook authentication** — Every incoming webhook request is cryptographically validated before processing. Telegram webhooks are verified via the `X-Telegram-Bot-Api-Secret-Token` header (registered with Telegram's `setWebhook` API). Slack webhooks are verified using HMAC-SHA256 signature validation with a 5-minute replay attack window. Validation is fail-closed — requests are rejected if secrets are not configured.
+
+**API surface minimization** — The API Gateway exposes only three explicit routes (`POST /webhook/telegram`, `POST /webhook/slack`, `GET /health`). All other paths return 404 from API Gateway itself without invoking the Lambda. Rate limiting (burst: 50, sustained: 100 req/s) provides DDoS protection.
+
+**Secret management** — All sensitive values (bot tokens, webhook secrets, Cognito password secret, gateway token) are stored in AWS Secrets Manager encrypted with a customer-managed KMS key. Secrets are fetched at runtime and held in process memory only — never written to environment variables, config files, or logs.
+
+**Least-privilege IAM** — Each component has tightly scoped permissions: the Router Lambda can only invoke the specific AgentCore Runtime (not `Resource: *`), Cognito operations are scoped to the specific user pool, and Secrets Manager access is limited to the `openclaw/*` prefix.
+
+**Per-user isolation** — Each user runs in their own AgentCore microVM with a dedicated S3 namespace. There is no shared state between users. Namespace derivation is system-controlled (from the channel identity) and cannot be influenced by user input.
+
+**Container hardening** — The bridge container runs as a non-root user (`openclaw`, uid 1001). Request body size is limited to 1MB to prevent memory exhaustion. Internal error details and stack traces are never exposed in API responses.
+
+**Encryption** — Data is encrypted at rest (S3 with KMS, DynamoDB with AWS-managed keys, Secrets Manager with CMK) and in transit (TLS for all AWS API calls, HTTPS for API Gateway). CloudTrail provides a full audit trail of API activity.
+
+**Identity** — Cognito User Pool provides per-user identity with HMAC-derived passwords (deterministic, never stored). AgentCore WorkloadIdentity integrates with Cognito OIDC for JWT-based authentication.
+
+**Observability** — CloudWatch dashboards and alarms monitor Lambda errors, latency, and throttling. Token usage is tracked per user via custom CloudWatch metrics with budget alarms.
+
+**Automated compliance** — Every `cdk synth` runs [cdk-nag](https://github.com/cdklabs/cdk-nag) AwsSolutions checks against the entire infrastructure, catching misconfigurations before deployment.
+
 ## Prerequisites
 
 - **AWS Account** with Bedrock access
@@ -109,7 +149,7 @@ Or edit `cdk.json` directly:
 {
   "context": {
     "account": "123456789012",
-    "region": "ap-southeast-2"
+    "region": "us-west-2"
   }
 }
 ```
@@ -532,20 +572,13 @@ The Router Lambda validates all incoming webhook requests:
 
 Requests that fail validation receive a 401 response and are logged with the source IP.
 
-### Per-User Workspace
+The Router Lambda validates all incoming webhook requests:
 
-Each user gets 6 workspace files auto-provisioned in S3 on first interaction:
+- **Telegram**: Validates the `X-Telegram-Bot-Api-Secret-Token` header against the `openclaw/webhook-secret` stored in Secrets Manager. The secret is registered with Telegram via the `secret_token` parameter on `setWebhook`.
+- **Slack**: Validates the `X-Slack-Signature` HMAC-SHA256 header using the Slack app's signing secret. Includes 5-minute timestamp check to prevent replay attacks.
+- **API Gateway**: Only explicit routes are exposed (`POST /webhook/telegram`, `POST /webhook/slack`, `GET /health`). All other paths return 404 from API Gateway without invoking the Lambda. Rate limiting is applied (burst: 50, sustained: 100 req/s).
 
-| File | Purpose |
-|---|---|
-| `AGENTS.md` | Operating instructions (rules, priorities, behavioral guidelines) |
-| `SOUL.md` | Agent persona (tone, communication boundaries) |
-| `USER.md` | User preferences (language, format, interests) |
-| `IDENTITY.md` | Agent identity (name, vibe, emoji) |
-| `TOOLS.md` | Tools documentation (available skills and conventions) |
-| `MEMORY.md` | Freeform notes and memories |
-
-Files are stored at `s3://{bucket}/{namespace}/{filename}` where namespace is derived from the user's channel identity (e.g., `telegram_6087229962`). All 6 files are read from S3 in parallel and injected into the system prompt on every request. Content is sanitized (code fence escaping, 4096 chars per file, 20,000 chars total cap) to prevent prompt injection.
+Requests that fail validation receive a 401 response and are logged with the source IP.
 
 ### Token Usage Tracking
 
