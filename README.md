@@ -1,5 +1,9 @@
 # OpenClaw on AgentCore Runtime
 
+> **Experimental** — This project is provided for experimentation and learning purposes only. It is **not intended for production use**. APIs, architecture, and configuration may change without notice.
+
+> **Note**: The cron job scheduling feature (via the `cron-mastery` skill) is not yet fully implemented. A future update will add Lambda-based cron job execution triggered by OpenClaw's cron scheduler. The skill is pre-installed but cron jobs cannot execute autonomously in the current serverless architecture.
+
 Deploy an AI-powered multi-channel messaging bot (Telegram, Slack) on AWS Bedrock AgentCore Runtime using CDK.
 
 OpenClaw runs as **per-user serverless containers** on AgentCore Runtime. A Router Lambda handles webhook ingestion from Telegram and Slack, resolves user identity via DynamoDB, and invokes per-user AgentCore sessions. Each user gets their own microVM with workspace persistence (`.openclaw/` directory synced to S3). The agent has built-in tools (web, filesystem, runtime, sessions, automation) and 10 pre-installed ClawHub skills.
@@ -568,6 +572,10 @@ cdk destroy --all
 
 Note: KMS keys and the Cognito User Pool have `RETAIN` removal policies and will not be deleted automatically. Remove them manually if needed.
 
+## Security
+
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
 ## License
 
-See [LICENSE](LICENSE) for details.
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
