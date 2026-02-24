@@ -44,13 +44,16 @@ OpenClaw on AgentCore Runtime — a multi-channel AI messaging bot (Telegram, Sl
   | AgentCore Runtime     |  <-- Per-user microVM (ARM64, VPC mode)
   |                       |
   | agentcore-contract.js (8080) -- /ping (Healthy), /invocations
-  |   -> lazy init:
-  |     1. Restore .openclaw/ from S3
-  |     2. Start proxy (18790) with USER_ID env
-  |     3. Start OpenClaw headless (18789)
-  |     4. Bridge messages via WebSocket
+  |   -> boot: pre-fetch secrets from Secrets Manager
+  |   -> first /invocations (parallel):
+  |     1. Start proxy (18790) + OpenClaw (18789) + restore .openclaw/
+  |     2. Wait for proxy only (~5s)
+  |     3. Lightweight agent handles messages immediately
+  |   -> background: OpenClaw starts (~2-4 min)
+  |   -> handoff: once OpenClaw ready, route via WebSocket bridge
   |   -> SIGTERM: save .openclaw/ to S3
   |                       |
+  | lightweight-agent.js  -- warm-up shim (proxy -> Bedrock, s3-user-files tools)
   | agentcore-proxy.js    (18790) -- OpenAI -> Bedrock ConverseStream
   | OpenClaw Gateway      (18789) -- headless, no channels
   +-----------+-----------+
@@ -108,7 +111,8 @@ openclaw-on-agentcore/
   bridge/
     Dockerfile                    # Container image (node:22-slim, ARM64, clawhub skills)
     entrypoint.sh                 # Startup: configure IPv4, start contract server
-    agentcore-contract.js         # AgentCore HTTP contract with lazy init + WebSocket bridge
+    agentcore-contract.js         # AgentCore HTTP contract with hybrid routing (shim + OpenClaw)
+    lightweight-agent.js          # Warm-up agent shim (handles messages while OpenClaw starts)
     agentcore-proxy.js            # OpenAI -> Bedrock ConverseStream adapter + Identity + multimodal images
     image-support.test.js         # Image support unit tests (node:test)
     workspace-sync.js             # .openclaw/ directory S3 sync (restore/save/periodic)
@@ -415,9 +419,9 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - Empty `cdk.json` account: falls back to `CDK_DEFAULT_ACCOUNT` env var via `app.py`
 
 ### OpenClaw
-- Startup takes ~4 minutes (plugin registration)
+- Startup takes ~2-4 minutes (plugin registration); lightweight agent shim handles messages during this time
 - Correct start command: `openclaw gateway run --port 18789 --bind lan --verbose`
-- **`skills.allowBundled`**: Must be an array (e.g., `["*"]`), not a boolean
+- **`skills.allowBundled`**: Must be an array (e.g., `[]` for none, `["*"]` for all), not a boolean. Set to `[]` for fast startup
 - **ClawHub skill paths**: `clawhub install` installs to `/skills/<name>` — use `/skills` as `extraDirs`
 - **ClawHub VirusTotal flags**: Some skills flagged for external API calls — use `--force`
 - **Image updates**: New sessions use new image automatically (no keepalive restart needed)
@@ -435,7 +439,7 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **Webhook validation**: Telegram uses `X-Telegram-Bot-Api-Secret-Token` header (set via `secret_token` on `setWebhook`). Slack uses `X-Slack-Signature` HMAC-SHA256 with 5-minute replay window
 - **Async dispatch**: Self-invokes with `InvocationType=Event` for actual processing; returns 200 immediately to webhook
 - **Slack**: Handles `url_verification` challenge synchronously; ignores retries via `x-slack-retry-num` header
-- **Cold start latency**: First message to a new user triggers microVM creation + OpenClaw startup (~4 min)
+- **Cold start latency**: First message to a new user triggers microVM creation; lightweight agent responds in ~10-15s while OpenClaw starts in background (~2-4 min)
 - **Telegram typing indicator**: Sent while waiting for AgentCore response
 - **Cross-channel binding**: "link accounts" generates 6-char code in DynamoDB with 10-min TTL
 - **Image uploads**: Telegram photos and Slack file attachments (JPEG, PNG, GIF, WebP, max 3.75 MB) are downloaded by the Router Lambda, uploaded to S3 under `{namespace}/_uploads/`, and passed to AgentCore as a structured message `{text, images[{s3Key, contentType}]}`
