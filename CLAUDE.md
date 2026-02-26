@@ -101,6 +101,9 @@ openclaw-on-agentcore/
   lambda/
     token_metrics/index.py        # Bedrock log -> DynamoDB + CloudWatch metrics
     router/index.py               # Webhook router (Telegram + Slack)
+  scripts/
+    setup-telegram.sh             # Webhook registration + admin allowlist (one-step)
+    manage-allowlist.sh           # Add/remove/list users in the allowlist
   docs/
     architecture.md               # Detailed architecture diagrams
 ```
@@ -143,7 +146,14 @@ docker push \
   $CDK_DEFAULT_ACCOUNT.dkr.ecr.$CDK_DEFAULT_REGION.amazonaws.com/openclaw-bridge:latest
 ```
 
-### Webhook Setup
+### Webhook Setup (Telegram)
+
+The setup script registers the webhook and adds you to the allowlist in one step:
+```bash
+./scripts/setup-telegram.sh
+```
+
+Or manually:
 ```bash
 # Get Router API Gateway URL
 API_URL=$(aws cloudformation describe-stacks \
@@ -161,6 +171,9 @@ TELEGRAM_TOKEN=$(aws secretsmanager get-secret-value \
   --secret-id openclaw/channels/telegram \
   --region $CDK_DEFAULT_REGION --query SecretString --output text)
 curl "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${API_URL}webhook/telegram&secret_token=${WEBHOOK_SECRET}"
+
+# Add yourself to the allowlist (find your ID via @userinfobot on Telegram)
+./scripts/manage-allowlist.sh add telegram:YOUR_TELEGRAM_USER_ID
 ```
 
 ### Channel Setup
@@ -268,11 +281,17 @@ Unauthorized users who message the bot receive a rejection message that includes
 
 #### First-User Bootstrap
 
-After initial deployment, no users exist. To register the first user (typically yourself):
+After initial deployment, no users exist. The easiest path is the setup script, which registers the webhook and adds you to the allowlist in one step:
 
-1. Message the bot from Telegram (or Slack)
+```bash
+./scripts/setup-telegram.sh
+```
+
+Alternatively, if you don't know your Telegram user ID:
+
+1. Message the bot from Telegram
 2. The bot replies with a rejection message showing your ID, e.g. `telegram:123456`
-3. Add yourself to the allowlist using the CLI:
+3. Add yourself to the allowlist:
    ```bash
    ./scripts/manage-allowlist.sh add telegram:123456
    ```
