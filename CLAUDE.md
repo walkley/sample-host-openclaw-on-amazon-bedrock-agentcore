@@ -264,6 +264,33 @@ aws dynamodb scan --table-name openclaw-identity --region $CDK_DEFAULT_REGION
 
 When `registration_open` is `false` (default), only users with an `ALLOW#` record in DynamoDB can register. Existing users (already have a `CHANNEL#` record) are always allowed. Cross-channel binding bypasses the allowlist since it links to an already-approved user.
 
+Unauthorized users who message the bot receive a rejection message that includes their channel ID (e.g. `telegram:123456`), so they can share it with the admin for onboarding.
+
+#### First-User Bootstrap
+
+After initial deployment, no users exist. To register the first user (typically yourself):
+
+1. Message the bot from Telegram (or Slack)
+2. The bot replies with a rejection message showing your ID, e.g. `telegram:123456`
+3. Add yourself to the allowlist using the CLI:
+   ```bash
+   ./scripts/manage-allowlist.sh add telegram:123456
+   ```
+4. Message the bot again — you are now registered
+
+#### Adding New Users
+
+When someone wants access to the bot:
+
+1. They message the bot and receive: *"Your ID: `telegram:789012`. Send this ID to the bot admin to request access."*
+2. The admin adds them:
+   ```bash
+   ./scripts/manage-allowlist.sh add telegram:789012
+   ```
+3. The user messages the bot again — they are now registered
+
+#### Managing the Allowlist
+
 ```bash
 # Add a user to the allowlist
 ./scripts/manage-allowlist.sh add telegram:123456

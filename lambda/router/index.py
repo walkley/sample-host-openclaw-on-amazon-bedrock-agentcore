@@ -565,7 +565,9 @@ def handle_telegram(body):
     if resolved_user_id is None:
         send_telegram_message(
             chat_id,
-            "Sorry, this bot is private. You are not authorized to use it.",
+            f"Sorry, this bot is private and requires an invitation.\n\n"
+            f"Your ID: `telegram:{user_id_tg}`\n\n"
+            f"Send this ID to the bot admin to request access.",
             token,
         )
         return
@@ -658,7 +660,9 @@ def handle_slack(body, headers=None):
     if resolved_user_id is None:
         send_slack_message(
             channel_id,
-            "Sorry, this bot is private. You are not authorized to use it.",
+            f"Sorry, this bot is private and requires an invitation.\n\n"
+            f"Your ID: `slack:{slack_user_id}`\n\n"
+            f"Send this ID to the bot admin to request access.",
             bot_token,
         )
         return {"statusCode": 200, "body": "ok"}
