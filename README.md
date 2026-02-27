@@ -246,6 +246,7 @@ openclaw-on-agentcore/
     lightweight-agent.test.js     # Lightweight agent unit tests (node:test, 70 tests)
     agentcore-proxy.js            # OpenAI -> Bedrock ConverseStream adapter + Identity + multimodal images
     image-support.test.js         # Image support unit tests (node:test)
+    subagent-routing.test.js      # Subagent model routing + detection tests (node:test)
     workspace-sync.js             # .openclaw/ directory S3 sync (restore/save/periodic)
     force-ipv4.js                 # DNS patch for Node.js 22 IPv6 issue
     CLAUDE.md                     # Project instructions (for Claude Code IDE)
@@ -609,6 +610,7 @@ cdk deploy OpenClawAgentCore --require-approval never
 cd bridge && node --test proxy-identity.test.js       # identity + workspace tests
 cd bridge && node --test image-support.test.js         # image upload + multimodal tests
 cd bridge && node --test lightweight-agent.test.js     # lightweight agent tools + buildToolArgs tests
+cd bridge && node --test subagent-routing.test.js      # subagent model routing + detection tests
 cd bridge/skills/s3-user-files && AWS_REGION=$CDK_DEFAULT_REGION node --test common.test.js  # S3 skill tests
 cd lambda/router && python -m pytest test_image_upload.py -v   # image upload unit tests
 

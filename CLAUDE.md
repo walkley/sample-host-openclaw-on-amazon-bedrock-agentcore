@@ -250,6 +250,7 @@ source .venv/bin/activate && cdk deploy OpenClawAgentCore --require-approval nev
 cd bridge && node --test proxy-identity.test.js       # identity + workspace tests
 cd bridge && node --test image-support.test.js         # image upload + multimodal tests
 cd bridge && node --test lightweight-agent.test.js     # lightweight agent tools + buildToolArgs tests
+cd bridge && node --test subagent-routing.test.js      # subagent model routing + detection tests
 cd bridge/skills/s3-user-files && AWS_REGION=$CDK_DEFAULT_REGION node --test common.test.js  # S3 skill tests
 ```
 
@@ -419,7 +420,7 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **Tool profile**: Uses `"full"` profile with a deny list. Do NOT use `"basic"` (undocumented, may disable web tools). Documented profiles: `minimal`, `coding`, `messaging`, `full`
 - **Deny list**: `["write", "edit", "apply_patch", "browser", "canvas", "cron", "gateway"]` — local writes use S3 skill, no browser/UI in container, EventBridge replaces built-in cron
 - **Sub-agent sandbox**: Must be `"off"` — no Docker inside AgentCore microVMs. MicroVMs already provide per-user isolation
-- **Sub-agent model**: Configurable via `SUBAGENT_MODEL` env var (from `subagent_model_id` in cdk.json). Empty = use same as main model
+- **Sub-agent model**: Configurable via `SUBAGENT_BEDROCK_MODEL_ID` env var (from `subagent_model_id` in cdk.json). Empty = use same as main model. Subagents use a distinct model name (`bedrock-agentcore-subagent`) so the proxy can detect and count them separately
 - **`skipBootstrap` removed**: No longer a valid config key — OpenClaw rejects unknown keys and exits with code 1
 - **`skills.allowBundled`**: Must be an array (e.g., `[]` for none, `["*"]` for all), not a boolean. Set to `[]` for fast startup
 - **ClawHub skill paths**: `clawhub install` installs to managed skills path — OpenClaw scans this automatically. Custom skills in `/skills/` loaded via `extraDirs`
@@ -476,3 +477,22 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **S3-backed isolation**: User files in `s3://openclaw-user-files-{account}-{region}/{namespace}/`
 - **Namespace immutability**: System-determined from channel identity, cannot be changed by user request
 - **actorId vs namespace**: actorId uses colon format (`telegram:123456789`), namespace uses underscore format (`telegram_123456789`). Skill scripts (s3-user-files, eventbridge-cron) expect namespace format. The lightweight agent's `chat()` converts via `userId.replace(/:/g, "_")` before passing to tools. The proxy and workspace sync also use namespace format for S3 keys
+
+## Branch Awareness
+Always confirm which git branch you are on BEFORE making any code changes or deployments. If the user specifies a branch, switch to it first and verify with `git branch --show-current`. Never assume the current branch is correct.
+Add under a ## Deployment section in CLAUDE.md\n\n
+
+
+## Deployment Target
+Default deployment region is `ap-southeast-2`. Always use this region for ECR, CDK, and Docker operations unless explicitly told otherwise. After deploying, verify the old session/container is replaced — stale sessions can mask fixes.
+Add under ## Git Operations or ## Branch Awareness section in CLAUDE.md\n\n
+
+## Git Operations
+Never push to any remote (GitHub, GitLab, or otherwise) without explicit user confirmation. Always ask before pushing.
+Add as a top-level section in CLAUDE.md under ## Workflow Conventions\n\n
+
+## Planning vs Implementation
+When asked to create a plan, produce it concisely in ONE iteration. Do not endlessly revise or research unless asked. If the user says 'implement', move directly to code changes — do not re-plan. If a plan is approved, begin implementation immediately.
+Add at the very top of CLAUDE.md as ## Project Context so Claude always has this grounding\n\n
+## Project Context
+This is a Python/Node.js project (OpenClaw on AWS Bedrock AgentCore). Key components: Telegram bot, Slack Socket Mode, CDK infrastructure, Docker/ECR deployments, S3 workspace, per-user memory isolation. Subagents are OpenClaw-native running on the same AgentCore runtime — they are NOT separate Bedrock agents.

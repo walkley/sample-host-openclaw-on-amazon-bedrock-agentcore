@@ -116,13 +116,13 @@ The tests are behavioral smoke tests — they confirm the skills produce substan
 
 **Sub-agent configuration path** (for debugging failures):
 ```
-cdk.json: subagent_model_id → agentcore_stack.py: SUBAGENT_MODEL env →
+cdk.json: subagent_model_id → agentcore_stack.py: SUBAGENT_BEDROCK_MODEL_ID env →
   agentcore-contract.js: writeOpenClawConfig() →
-    openclaw.json: agents.defaults.subagents.model = "agentcore/bedrock-agentcore"
-      → proxy at 127.0.0.1:18790 → Bedrock ConverseStream (hardcoded MODEL_ID)
+    openclaw.json: agents.defaults.subagents.model = "agentcore/bedrock-agentcore-subagent"
+      → proxy resolveModelId() → Bedrock ConverseStream (SUBAGENT_BEDROCK_MODEL_ID or MODEL_ID)
 ```
 
-**Known limitation**: The proxy ignores the `model` field from OpenAI requests (`agentcore-proxy.js:990,1075`). All requests — main agent and sub-agents — use the same `BEDROCK_MODEL_ID`. The `subagent_model_id` config in `cdk.json` has no effect on model selection.
+**Subagent verification**: The proxy detects subagent requests by the distinct model name (`bedrock-agentcore-subagent`), increments `subagentRequestCount`, and exposes it via `/health` and the contract `status` endpoint. E2E tests assert this count increases after skill invocations.
 
 ## How It Works
 

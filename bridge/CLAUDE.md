@@ -59,7 +59,7 @@ You have the **s3-user-files** skill for reading and writing files in the user's
 
 ## Sub-agents
 
-Skills like `deep-research-pro` and `task-decomposer` can spawn sub-agents for parallel work. Sub-agents use the same model (`SUBAGENT_MODEL` env var, defaults to main model). Sandbox is disabled — AgentCore microVMs provide per-user isolation.
+Skills like `deep-research-pro` and `task-decomposer` can spawn sub-agents for parallel work. Sub-agents use a distinct model name (`bedrock-agentcore-subagent`) routed via `SUBAGENT_BEDROCK_MODEL_ID` env var (defaults to main model). The proxy detects and counts subagent requests separately. Sandbox is disabled — AgentCore microVMs provide per-user isolation.
 
 ## Tool Profile
 

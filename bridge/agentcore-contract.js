@@ -55,7 +55,7 @@ let initPromise = null;
 let secretsPrefetchPromise = null;
 let startTime = Date.now();
 let shuttingDown = false;
-const BUILD_VERSION = "v30"; // Bump in cdk.json to force container redeploy
+const BUILD_VERSION = "v31"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
 const OPENCLAW_LOG_LIMIT = 50;
