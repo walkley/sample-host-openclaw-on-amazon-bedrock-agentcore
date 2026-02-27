@@ -409,10 +409,10 @@ Each user gets their own AgentCore microVM. When a user sends a message:
    - Starts the Bedrock proxy with `USER_ID`/`CHANNEL` env vars
    - Starts OpenClaw gateway in headless mode (background)
    - Restores `.openclaw/` workspace from S3 (background)
-   - Waits for proxy only (~5s), then the **lightweight agent** handles the message immediately via proxy -> Bedrock
-   - OpenClaw starts in background (~2-4 min); once ready, all subsequent messages route via WebSocket bridge
-3. **WebSocket bridge** (after OpenClaw ready) forwards messages to OpenClaw, collects streaming response deltas, and returns the accumulated text
-4. **Router Lambda** sends the response back to the channel (Telegram/Slack API)
+   - Waits for proxy only (~5s), then the **lightweight agent** handles the message immediately
+3. **Lightweight agent** (warm-up phase, ~5s to ~2-4min) runs an agentic loop with 10 tools: `web_fetch`, `web_search`, S3 file storage (read/write/list/delete), and EventBridge cron scheduling (create/list/update/delete). Web tools include SSRF prevention (IP blocklists, DNS rebinding mitigation). All responses include a deterministic warm-up footer
+4. **WebSocket bridge** (after OpenClaw ready, ~2-4min) takes over — messages route to OpenClaw which provides full tool profile, 5 ClawHub skills, and sub-agent support. Responses no longer have the warm-up footer
+5. **Router Lambda** sends the response back to the channel (Telegram/Slack API)
 
 When the session idles (default 30 min), AgentCore terminates the microVM. Before shutdown, the SIGTERM handler saves `.openclaw/` to S3. The next message creates a fresh microVM and restores the workspace.
 

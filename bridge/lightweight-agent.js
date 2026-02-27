@@ -38,8 +38,8 @@ const SYSTEM_PROMPT =
   "When users ask for reminders, scheduled tasks, or recurring actions, use the scheduling tools. " +
   "Always ask for timezone if not known.\n\n" +
   "After full startup completes (~2-4 minutes), you gain additional capabilities: " +
-  "deep research (multi-step analysis), YouTube transcripts, Hacker News browsing, " +
-  "news feeds, task decomposition with sub-agents, and more community skills.";
+  "deep research (multi-step analysis), YouTube transcripts, rich Telegram formatting, " +
+  "task decomposition with sub-agents, and enhanced web reading via Jina.";
 
 const TOOLS = [
   {
