@@ -364,10 +364,10 @@ function stripHtml(html) {
   let text = html;
 
   // Remove script, style, and noscript blocks (including content)
-  // Closing tags allow optional whitespace/attributes: </script > , </SCRIPT\n>
-  text = text.replace(/<script[^>]*>[\s\S]*?<\/\s*script\s*>/gi, " ");
-  text = text.replace(/<style[^>]*>[\s\S]*?<\/\s*style\s*>/gi, " ");
-  text = text.replace(/<noscript[^>]*>[\s\S]*?<\/\s*noscript\s*>/gi, " ");
+  // Closing tags may contain whitespace, attributes, or junk: </script \t\n bar>
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/\s*script[^>]*>/gi, " ");
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/\s*style[^>]*>/gi, " ");
+  text = text.replace(/<noscript[^>]*>[\s\S]*?<\/\s*noscript[^>]*>/gi, " ");
 
   // Remove HTML comments
   text = text.replace(/<!--[\s\S]*?-->/g, " ");
