@@ -41,6 +41,7 @@ flowchart LR
     subgraph AWS[AWS Cloud]
         APIGW[API Gateway<br/>HTTP API]
         ROUTER[Router Lambda]
+        DDB[(DynamoDB<br/>Identity + Access)]
         AGENT[AgentCore Runtime<br/>Per-User Container]
         BEDROCK[Amazon Bedrock<br/>Claude]
         CRON[EventBridge<br/>Scheduler]
@@ -49,6 +50,7 @@ flowchart LR
 
     TG & SL <-->|webhooks| APIGW
     APIGW <--> ROUTER
+    ROUTER <-->|users, sessions| DDB
     ROUTER <--> AGENT
     AGENT <--> BEDROCK
     CRON --> CRONLAMBDA
