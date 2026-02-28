@@ -55,7 +55,7 @@ let initPromise = null;
 let secretsPrefetchPromise = null;
 let startTime = Date.now();
 let shuttingDown = false;
-const BUILD_VERSION = "v31"; // Bump in cdk.json to force container redeploy
+const BUILD_VERSION = "v32"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
 const OPENCLAW_LOG_LIMIT = 50;
@@ -563,7 +563,7 @@ async function init(userId, actorId, channel) {
 
 /**
  * Extract plain text from message content — handles string, array of content
- * blocks, or JSON-serialized array of content blocks.
+ * blocks, JSON-serialized array of content blocks, or object with text/content.
  */
 function extractTextFromContent(content) {
   if (!content) return "";
@@ -589,6 +589,17 @@ function extractTextFromContent(content) {
     }
     // Plain text string
     return content;
+  }
+  // Object with text or content property (e.g., {role: "assistant", content: "..."})
+  if (typeof content === "object" && content !== null) {
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.content === "string") return content.content;
+    if (Array.isArray(content.content)) {
+      return content.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+    }
   }
   return "";
 }
@@ -662,17 +673,15 @@ async function bridgeMessage(message, timeoutMs = 240000) {
     };
 
     const timer = setTimeout(() => {
-      console.log(
-        `[contract] WebSocket timeout after ${timeoutMs}ms (auth=${authenticated}, chatSent=${chatSent})`,
-      );
       const debugInfo =
         unhandledMsgs.length > 0
           ? ` unhandled=[${unhandledMsgs.slice(0, 5).join(" | ")}]`
           : "";
-      done(
-        responseText ||
-          `Timeout (auth=${authenticated}, chat=${chatSent})${debugInfo}`,
+      console.warn(
+        `[contract] WebSocket timeout after ${timeoutMs}ms (auth=${authenticated}, chatSent=${chatSent}, responseLen=${responseText.length})${debugInfo}`,
       );
+      // Return "" on timeout so caller can fall back to lightweight agent
+      done(responseText || "");
     }, timeoutMs);
 
     ws.on("open", () => {
@@ -752,29 +761,43 @@ async function bridgeMessage(message, timeoutMs = 240000) {
         return;
       }
 
+      // Helper: try all known content locations in a payload
+      const extractFromPayload = (pl) => {
+        return (
+          extractTextFromContent(pl.message?.content) ||
+          extractTextFromContent(pl.message) ||
+          extractTextFromContent(pl.text) ||
+          extractTextFromContent(pl.content)
+        );
+      };
+
       // Step 3: Chat events — state: "delta" (streaming) or "final" (complete)
       // OpenClaw puts content in payload.message.content (usual) or
       // directly in payload.message (string or content-blocks array).
       if (msg.type === "event" && msg.event === "chat") {
         const payload = msg.payload || {};
-        const msgContent = payload.message?.content;
 
         if (payload.state === "delta") {
-          const text =
-            extractTextFromContent(msgContent) ||
-            extractTextFromContent(payload.message);
+          const text = extractFromPayload(payload);
           if (text) responseText = text; // Delta replaces (accumulates progressively)
           return;
         }
 
         if (payload.state === "final") {
           // Final message may include the complete text
-          const text =
-            extractTextFromContent(msgContent) ||
-            extractTextFromContent(payload.message);
+          const text = extractFromPayload(payload);
           if (text) responseText = text;
           console.log(`[contract] Chat final (${responseText.length} chars)`);
-          done(responseText || "Message processed.");
+          if (responseText) {
+            done(responseText);
+          } else {
+            // Empty final — log full payload for diagnostics and return ""
+            // to signal caller that the bridge got no content.
+            console.warn(
+              `[contract] Empty final event — payload: ${JSON.stringify(payload).slice(0, 1000)}`,
+            );
+            done("");
+          }
           return;
         }
 
@@ -813,8 +836,15 @@ async function bridgeMessage(message, timeoutMs = 240000) {
         );
         // "started" or "accepted" = in progress, wait for streaming events
         if (status === "started" || status === "accepted") return;
-        // "final" or "done" = completed
-        done(responseText || "Message processed (no streaming content).");
+        // "final" or "done" = completed — return "" if no content (bridge empty)
+        if (responseText) {
+          done(responseText);
+        } else {
+          console.warn(
+            `[contract] Chat response completed with no streaming content — payload: ${JSON.stringify(msg.payload).slice(0, 500)}`,
+          );
+          done("");
+        }
         return;
       }
 
@@ -824,22 +854,21 @@ async function bridgeMessage(message, timeoutMs = 240000) {
 
     ws.on("error", (err) => {
       console.error(`[contract] WebSocket error: ${err.message}`);
-      done(responseText || `Connection error: ${err.message}`);
+      // Return "" on error so caller can fall back to lightweight agent
+      done(responseText || "");
     });
 
     ws.on("close", (code, reason) => {
       const reasonStr = reason ? reason.toString() : "";
-      console.log(
-        `[contract] WebSocket closed: code=${code} reason=${reasonStr} auth=${authenticated} chatSent=${chatSent}`,
-      );
       const debugInfo =
         unhandledMsgs.length > 0
           ? ` unhandled=[${unhandledMsgs.slice(0, 3).join(" | ")}]`
           : "";
-      done(
-        responseText ||
-          `WS closed (code=${code}, reason=${reasonStr})${debugInfo}`,
+      console.warn(
+        `[contract] WebSocket closed: code=${code} reason=${reasonStr} auth=${authenticated} chatSent=${chatSent} responseLen=${responseText.length}${debugInfo}`,
       );
+      // Return "" on unexpected close so caller can fall back to lightweight agent
+      done(responseText || "");
     });
   });
 }
@@ -997,7 +1026,25 @@ const server = http.createServer(async (req, res) => {
           try {
             responseText = await enqueueMessage(message);
           } catch (bridgeErr) {
-            responseText = `Bridge error: ${bridgeErr.message}`;
+            responseText = "";
+            console.error(
+              `[contract] Cron bridge error: ${bridgeErr.message}`,
+            );
+          }
+          // If bridge returned empty, fall back to lightweight agent
+          if (!responseText || !responseText.trim()) {
+            console.warn(
+              "[contract] Cron bridge returned empty — falling back to lightweight agent",
+            );
+            try {
+              responseText = await agent.chat(message, actorId);
+            } catch (agentErr) {
+              responseText =
+                "I couldn't process this scheduled task. Please check the configuration.";
+              console.error(
+                `[contract] Cron lightweight agent fallback error: ${agentErr.message}`,
+              );
+            }
           }
 
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -1074,8 +1121,23 @@ const server = http.createServer(async (req, res) => {
               console.error(
                 `[contract] Bridge error, falling back to shim: ${bridgeErr.message}`,
               );
-              // Fall back to lightweight agent on bridge failure
-              responseText = await agent.chat(bridgeText, actorId);
+              responseText = "";
+            }
+            // If bridge returned empty (OpenClaw sent no content), fall back to
+            // lightweight agent so the user always gets a real AI response.
+            if (!responseText || !responseText.trim()) {
+              console.warn(
+                "[contract] Bridge returned empty — falling back to lightweight agent",
+              );
+              try {
+                responseText = await agent.chat(bridgeText, actorId);
+              } catch (agentErr) {
+                responseText =
+                  "I'm having trouble right now. Please try again in a moment.";
+                console.error(
+                  `[contract] Lightweight agent fallback error: ${agentErr.message}`,
+                );
+              }
             }
           } else if (proxyReady) {
             // Warm-up shim path — lightweight agent via proxy
