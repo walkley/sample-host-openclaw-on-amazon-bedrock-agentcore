@@ -18,6 +18,7 @@
  */
 
 const http = require("http");
+const fs = require("fs");
 const { spawn } = require("child_process");
 const WebSocket = require("ws");
 const {
@@ -58,6 +59,7 @@ let startTime = Date.now();
 let shuttingDown = false;
 let credentialRefreshTimer = null;
 const SCOPED_CREDS_DIR = "/tmp/scoped-creds";
+const IDENTITY_FILE = "/tmp/current-identity.json";
 const BUILD_VERSION = "v32"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
@@ -68,6 +70,23 @@ let openclawExitCode = null;
 // Message queue for serializing concurrent requests (OpenClaw WebSocket path)
 let messageQueue = [];
 let processingMessage = false;
+
+/**
+ * Write current actorId and channel to a shared file so the proxy process
+ * can pick up cross-channel identity changes (the proxy's env vars are
+ * fixed at spawn time and cannot be updated for a running child process).
+ */
+function updateIdentityFile(actorId, channel) {
+  try {
+    fs.writeFileSync(
+      IDENTITY_FILE,
+      JSON.stringify({ actorId, channel }),
+      "utf-8",
+    );
+  } catch (err) {
+    console.warn(`[contract] Failed to write identity file: ${err.message}`);
+  }
+}
 
 /**
  * Pre-fetch secrets from Secrets Manager at container boot.
@@ -430,6 +449,9 @@ async function init(userId, actorId, channel) {
     const namespace = actorId.replace(/:/g, "_");
     currentUserId = userId;
     currentNamespace = namespace;
+
+    // Write initial identity file for the proxy to read
+    updateIdentityFile(actorId, channel);
 
     console.log(
       `[contract] Init for user=${userId} actor=${actorId} namespace=${namespace}`,
@@ -1048,6 +1070,9 @@ const server = http.createServer(async (req, res) => {
             return;
           }
 
+          // Update shared identity file so proxy picks up cross-channel changes
+          updateIdentityFile(actorId, channel || "unknown");
+
           // Block until init completes (unlike chat which returns immediately)
           if (!openclawReady || !proxyReady) {
             try {
@@ -1127,6 +1152,9 @@ const server = http.createServer(async (req, res) => {
             );
             return;
           }
+
+          // Update shared identity file so proxy picks up cross-channel changes
+          updateIdentityFile(actorId, channel || "unknown");
 
           // Trigger init if not done yet (blocks until proxy is ready)
           if (!proxyReady && !initInProgress) {
