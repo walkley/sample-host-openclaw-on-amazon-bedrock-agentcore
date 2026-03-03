@@ -899,8 +899,19 @@ def handle_telegram(body):
 
     token = _get_telegram_token()
 
-    # Resolve user identity
+    # Handle bind commands BEFORE allowlist check — cross-channel binding
+    # bypasses the allowlist since it links to an already-approved user.
     actor_id = f"telegram:{user_id_tg}"
+    is_bind, code = _is_bind_command(text)
+    if is_bind:
+        bound_user_id, success = redeem_bind_code(code, "telegram", user_id_tg, display_name)
+        if success:
+            send_telegram_message(chat_id, "Accounts linked successfully! Your sessions are now unified.", token)
+        else:
+            send_telegram_message(chat_id, "Invalid or expired link code. Please try again.", token)
+        return
+
+    # Resolve user identity
     resolved_user_id, is_new = resolve_user("telegram", user_id_tg, display_name)
 
     if resolved_user_id is None:
@@ -913,7 +924,7 @@ def handle_telegram(body):
         )
         return
 
-    # Handle bind commands (text-only)
+    # Handle link-accounts command (generate bind code for existing users)
     if _is_link_command(text):
         code = create_bind_code(resolved_user_id)
         send_telegram_message(
@@ -922,15 +933,6 @@ def handle_telegram(body):
             f"by typing: `link {code}`",
             token,
         )
-        return
-
-    is_bind, code = _is_bind_command(text)
-    if is_bind:
-        bound_user_id, success = redeem_bind_code(code, "telegram", user_id_tg, display_name)
-        if success:
-            send_telegram_message(chat_id, "Accounts linked successfully! Your sessions are now unified.", token)
-        else:
-            send_telegram_message(chat_id, "Invalid or expired link code. Please try again.", token)
         return
 
     # Send typing indicator
@@ -1030,8 +1032,19 @@ def handle_slack(body, headers=None):
 
     bot_token, _ = _get_slack_tokens()
 
-    # Resolve user identity
+    # Handle bind commands BEFORE allowlist check — cross-channel binding
+    # bypasses the allowlist since it links to an already-approved user.
     actor_id = f"slack:{slack_user_id}"
+    is_bind, code = _is_bind_command(text)
+    if is_bind:
+        bound_user_id, success = redeem_bind_code(code, "slack", slack_user_id)
+        if success:
+            send_slack_message(channel_id, "Accounts linked successfully! Your sessions are now unified.", bot_token)
+        else:
+            send_slack_message(channel_id, "Invalid or expired link code. Please try again.", bot_token)
+        return {"statusCode": 200, "body": "ok"}
+
+    # Resolve user identity
     resolved_user_id, is_new = resolve_user("slack", slack_user_id)
 
     if resolved_user_id is None:
@@ -1044,7 +1057,7 @@ def handle_slack(body, headers=None):
         )
         return {"statusCode": 200, "body": "ok"}
 
-    # Handle bind commands (text-only)
+    # Handle link-accounts command (generate bind code for existing users)
     if _is_link_command(text):
         code = create_bind_code(resolved_user_id)
         send_slack_message(
@@ -1053,15 +1066,6 @@ def handle_slack(body, headers=None):
             f"by typing: `link {code}`",
             bot_token,
         )
-        return {"statusCode": 200, "body": "ok"}
-
-    is_bind, code = _is_bind_command(text)
-    if is_bind:
-        bound_user_id, success = redeem_bind_code(code, "slack", slack_user_id)
-        if success:
-            send_slack_message(channel_id, "Accounts linked successfully! Your sessions are now unified.", bot_token)
-        else:
-            send_slack_message(channel_id, "Invalid or expired link code. Please try again.", bot_token)
         return {"statusCode": 200, "body": "ok"}
 
     # Build message payload (structured if image, plain string if text-only)
