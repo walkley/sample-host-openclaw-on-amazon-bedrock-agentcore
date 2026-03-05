@@ -9,6 +9,7 @@ CLI usage:
     python -m tests.e2e.bot_test --subagent --tail-logs
     python -m tests.e2e.bot_test --skill-manage --tail-logs
     python -m tests.e2e.bot_test --api-keys --tail-logs
+    python -m tests.e2e.bot_test --cron --tail-logs
 
 Pytest usage:
     pytest tests/e2e/bot_test.py -v -k smoke
@@ -891,6 +892,242 @@ class TestSkillManagement:
         print(f"  List response ({tail.response_len} chars): {tail.response_text[:300]}")
 
 
+class TestCronSchedule:
+    """Verify eventbridge-cron skill: create, list, and delete schedules.
+
+    Tests the full cron schedule lifecycle through the bot and critically
+    verifies the CRON# DynamoDB record is created — this catches scoped
+    credential issues where DynamoDB LeadingKeys exclude the internal userId.
+
+    Flow:
+      1. Create a far-future one-time schedule via the bot
+      2. Verify the CRON# record exists in DynamoDB (direct check)
+      3. List schedules via the bot and verify the test schedule appears
+      4. Delete the schedule via the bot
+      5. Verify the CRON# record is gone from DynamoDB
+      6. Verify the EventBridge schedule is gone
+
+    Uses the eventbridge-cron skill which works in both warm-up mode
+    (lightweight agent) and full OpenClaw mode.
+
+    Run with: pytest tests/e2e/bot_test.py -v -k TestCronSchedule
+    """
+
+    SCHEDULE_NAME = "e2e-cron-test"
+    # Far-future one-time schedule (Jan 1 2099) — never fires
+    SCHEDULE_EXPR = "cron(0 0 1 1 ? 2099)"
+    SCHEDULE_TZ = "UTC"
+    SCHEDULE_MSG = "E2E cron test - should never fire"
+    SCHEDULE_GROUP = "openclaw-cron"
+
+    # Populated by test_create_schedule for use by later tests
+    _schedule_id = None
+
+    @pytest.fixture(autouse=True, scope="class")
+    def fresh_session(self, e2e_config):
+        """Reset session to start clean, then clean up stale test schedules."""
+        # Clean up any leftover test schedules from prior runs
+        self._cleanup_stale_schedules(e2e_config)
+        reset_session(e2e_config)
+        time.sleep(2)
+
+    @classmethod
+    def _cleanup_stale_schedules(cls, cfg):
+        """Delete any leftover E2E test schedules from prior runs."""
+        namespace = f"telegram_{cfg.telegram_user_id}"
+        scheduler = boto3.client("scheduler", region_name=cfg.region)
+        try:
+            resp = scheduler.list_schedules(GroupName=cls.SCHEDULE_GROUP)
+            for sched in resp.get("Schedules", []):
+                name = sched["Name"]
+                if name.startswith(f"openclaw-{namespace}-") and cls.SCHEDULE_NAME in sched.get("Description", ""):
+                    try:
+                        scheduler.delete_schedule(
+                            Name=name, GroupName=cls.SCHEDULE_GROUP
+                        )
+                        print(f"\n  [cleanup] Deleted stale test schedule: {name}")
+                    except ClientError:
+                        pass
+        except ClientError:
+            pass
+
+        # Also clean up CRON# records that reference e2e-cron-test
+        user_id = get_user_id(cfg)
+        if user_id:
+            dynamodb = boto3.resource("dynamodb", region_name=cfg.region)
+            table = dynamodb.Table(cfg.identity_table)
+            try:
+                resp = table.query(
+                    KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+                    ExpressionAttributeValues={
+                        ":pk": f"USER#{user_id}",
+                        ":sk": "CRON#",
+                    },
+                )
+                for item in resp.get("Items", []):
+                    if item.get("scheduleName", "") == cls.SCHEDULE_NAME:
+                        table.delete_item(
+                            Key={"PK": item["PK"], "SK": item["SK"]}
+                        )
+                        print(f"\n  [cleanup] Deleted stale CRON# record: {item['SK']}")
+            except ClientError:
+                pass
+
+    def test_create_schedule(self, e2e_config):
+        """Create a one-time far-future schedule via the bot."""
+        since_ms = int(time.time() * 1000)
+        result = post_webhook(
+            e2e_config,
+            f'Create a cron schedule using the eventbridge-cron skill. '
+            f'Schedule name: "{self.SCHEDULE_NAME}". '
+            f'Expression: {self.SCHEDULE_EXPR}. '
+            f'Timezone: {self.SCHEDULE_TZ}. '
+            f'Message: "{self.SCHEDULE_MSG}". '
+            f'Do not ask any follow-up questions, just create it.',
+        )
+        assert result.status_code == 200
+
+        tail = tail_logs(e2e_config, since_ms=since_ms, timeout_s=300)
+        assert tail.full_lifecycle, (
+            f"Create schedule incomplete (timed_out={tail.timed_out}, "
+            f"elapsed={tail.elapsed_s:.1f}s)"
+        )
+        resp_lower = tail.response_text.lower()
+        assert any(w in resp_lower for w in ["created", "scheduled", "success"]), (
+            f"Expected schedule creation confirmation.\n"
+            f"Response: {tail.response_text[:300]}"
+        )
+        print(f"  Create schedule response: {tail.response_text[:200]}")
+
+    def test_cron_record_exists(self, e2e_config):
+        """Verify the CRON# record was created in DynamoDB.
+
+        This is the critical check: scoped credentials must allow writing
+        to USER#{internalUserId} (e.g., USER#user_abc123), not just
+        USER#{actorId} (e.g., USER#telegram:12345). Without this, the
+        cron executor Lambda will reject scheduled executions.
+        """
+        user_id = get_user_id(e2e_config)
+        assert user_id, "E2E user not found in DynamoDB"
+
+        dynamodb = boto3.resource("dynamodb", region_name=e2e_config.region)
+        table = dynamodb.Table(e2e_config.identity_table)
+        resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_id}",
+                ":sk": "CRON#",
+            },
+        )
+        items = resp.get("Items", [])
+        matching = [
+            item for item in items
+            if item.get("scheduleName") == self.SCHEDULE_NAME
+        ]
+        assert len(matching) == 1, (
+            f"Expected exactly 1 CRON# record for '{self.SCHEDULE_NAME}', "
+            f"found {len(matching)}. All CRON# records: "
+            f"{[i.get('scheduleName') for i in items]}"
+        )
+        # Save schedule ID for later tests
+        TestCronSchedule._schedule_id = matching[0]["SK"].replace("CRON#", "")
+        print(f"  CRON# record found: scheduleId={TestCronSchedule._schedule_id}")
+
+    def test_eventbridge_schedule_exists(self, e2e_config):
+        """Verify the EventBridge schedule was created."""
+        assert TestCronSchedule._schedule_id, "No schedule ID from previous test"
+        namespace = f"telegram_{e2e_config.telegram_user_id}"
+        eb_name = f"openclaw-{namespace}-{TestCronSchedule._schedule_id}"
+
+        scheduler = boto3.client("scheduler", region_name=e2e_config.region)
+        try:
+            resp = scheduler.get_schedule(
+                Name=eb_name, GroupName=self.SCHEDULE_GROUP
+            )
+            assert resp["State"] == "ENABLED", f"Schedule state: {resp['State']}"
+            assert resp["ScheduleExpression"] == self.SCHEDULE_EXPR
+            print(f"  EventBridge schedule verified: {eb_name}")
+        except ClientError as e:
+            pytest.fail(
+                f"EventBridge schedule not found: {eb_name}. Error: {e}"
+            )
+
+    def test_list_schedules(self, e2e_config):
+        """List schedules via the bot and verify the test schedule appears."""
+        since_ms = int(time.time() * 1000)
+        result = post_webhook(
+            e2e_config,
+            "List all my cron schedules using the eventbridge-cron skill.",
+        )
+        assert result.status_code == 200
+
+        tail = tail_logs(e2e_config, since_ms=since_ms, timeout_s=300)
+        assert tail.full_lifecycle, (
+            f"List schedules incomplete (timed_out={tail.timed_out})"
+        )
+        resp_lower = tail.response_text.lower()
+        assert self.SCHEDULE_NAME in resp_lower, (
+            f"Expected '{self.SCHEDULE_NAME}' in schedule list.\n"
+            f"Response: {tail.response_text[:500]}"
+        )
+        print(f"  List schedules response: {tail.response_text[:300]}")
+
+    def test_delete_schedule(self, e2e_config):
+        """Delete the test schedule via the bot."""
+        assert TestCronSchedule._schedule_id, "No schedule ID from previous test"
+        since_ms = int(time.time() * 1000)
+        result = post_webhook(
+            e2e_config,
+            f'Delete the cron schedule with ID "{TestCronSchedule._schedule_id}" '
+            f'using the eventbridge-cron skill.',
+        )
+        assert result.status_code == 200
+
+        tail = tail_logs(e2e_config, since_ms=since_ms, timeout_s=300)
+        assert tail.full_lifecycle, (
+            f"Delete schedule incomplete (timed_out={tail.timed_out})"
+        )
+        resp_lower = tail.response_text.lower()
+        assert any(w in resp_lower for w in ["deleted", "removed", "success"]), (
+            f"Expected deletion confirmation.\n"
+            f"Response: {tail.response_text[:300]}"
+        )
+        print(f"  Delete schedule response: {tail.response_text[:200]}")
+
+    def test_cron_record_deleted(self, e2e_config):
+        """Verify the CRON# record was removed from DynamoDB after deletion."""
+        assert TestCronSchedule._schedule_id, "No schedule ID from previous test"
+        user_id = get_user_id(e2e_config)
+        assert user_id, "E2E user not found"
+
+        dynamodb = boto3.resource("dynamodb", region_name=e2e_config.region)
+        table = dynamodb.Table(e2e_config.identity_table)
+        resp = table.get_item(
+            Key={
+                "PK": f"USER#{user_id}",
+                "SK": f"CRON#{TestCronSchedule._schedule_id}",
+            }
+        )
+        assert "Item" not in resp, (
+            f"CRON# record still exists after deletion: {resp.get('Item')}"
+        )
+        print(f"  CRON# record confirmed deleted")
+
+    def test_eventbridge_schedule_deleted(self, e2e_config):
+        """Verify the EventBridge schedule was removed."""
+        assert TestCronSchedule._schedule_id, "No schedule ID from previous test"
+        namespace = f"telegram_{e2e_config.telegram_user_id}"
+        eb_name = f"openclaw-{namespace}-{TestCronSchedule._schedule_id}"
+
+        scheduler = boto3.client("scheduler", region_name=e2e_config.region)
+        try:
+            scheduler.get_schedule(Name=eb_name, GroupName=self.SCHEDULE_GROUP)
+            pytest.fail(f"EventBridge schedule still exists: {eb_name}")
+        except ClientError as e:
+            assert e.response["Error"]["Code"] == "ResourceNotFoundException"
+            print(f"  EventBridge schedule confirmed deleted: {eb_name}")
+
+
 class TestConversation:
     """Multi-message conversation tests."""
 
@@ -1160,6 +1397,94 @@ def _cli_api_keys(cfg, tail):
     return ok
 
 
+def _cli_cron(cfg, tail):
+    """Test cron schedule lifecycle: create, verify DynamoDB, list, delete."""
+    schedule_name = "e2e-cron-test"
+    schedule_expr = "cron(0 0 1 1 ? 2099)"
+    schedule_tz = "UTC"
+    schedule_msg = "E2E cron test - should never fire"
+
+    print("Cron schedule lifecycle test")
+
+    # Step 1: Create schedule
+    print(f"\n1. Creating schedule ({schedule_name})...")
+    ok = _cli_send(
+        cfg,
+        f'Create a cron schedule using the eventbridge-cron skill. '
+        f'Schedule name: "{schedule_name}". '
+        f'Expression: {schedule_expr}. '
+        f'Timezone: {schedule_tz}. '
+        f'Message: "{schedule_msg}". '
+        f'Do not ask any follow-up questions, just create it.',
+        tail,
+    )
+    if not ok:
+        return False
+    time.sleep(5)
+
+    # Step 2: Verify CRON# record in DynamoDB
+    print("\n2. Verifying CRON# record in DynamoDB...")
+    user_id = get_user_id(cfg)
+    if not user_id:
+        print("  FAIL: E2E user not found in DynamoDB")
+        return False
+
+    dynamodb = boto3.resource("dynamodb", region_name=cfg.region)
+    table = dynamodb.Table(cfg.identity_table)
+    resp = table.query(
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues={
+            ":pk": f"USER#{user_id}",
+            ":sk": "CRON#",
+        },
+    )
+    matching = [
+        item for item in resp.get("Items", [])
+        if item.get("scheduleName") == schedule_name
+    ]
+    if not matching:
+        print(f"  FAIL: No CRON# record found for '{schedule_name}'")
+        print(f"  All CRON# records: {[i.get('scheduleName') for i in resp.get('Items', [])]}")
+        return False
+    schedule_id = matching[0]["SK"].replace("CRON#", "")
+    print(f"  OK: CRON# record found (scheduleId={schedule_id})")
+
+    # Step 3: List schedules
+    print("\n3. Listing schedules...")
+    ok = _cli_send(
+        cfg,
+        "List all my cron schedules using the eventbridge-cron skill.",
+        tail,
+    )
+    if not ok:
+        return False
+    time.sleep(5)
+
+    # Step 4: Delete schedule
+    print(f"\n4. Deleting schedule ({schedule_id})...")
+    ok = _cli_send(
+        cfg,
+        f'Delete the cron schedule with ID "{schedule_id}" '
+        f'using the eventbridge-cron skill.',
+        tail,
+    )
+    if not ok:
+        return False
+    time.sleep(3)
+
+    # Step 5: Verify CRON# record deleted
+    print("\n5. Verifying CRON# record deleted from DynamoDB...")
+    resp = table.get_item(
+        Key={"PK": f"USER#{user_id}", "SK": f"CRON#{schedule_id}"}
+    )
+    if "Item" in resp:
+        print(f"  FAIL: CRON# record still exists: {resp['Item']}")
+        return False
+    print("  OK: CRON# record deleted")
+
+    return True
+
+
 def _cli_conversation(cfg, scenario_name, tail):
     if scenario_name not in SCENARIOS:
         print(f"Unknown scenario: {scenario_name}")
@@ -1192,6 +1517,7 @@ def main():
     parser.add_argument("--scoped-creds", action="store_true", help="Test S3 file ops via scoped credentials (requires full startup)")
     parser.add_argument("--skill-manage", action="store_true", help="Test skill management (list, install, uninstall)")
     parser.add_argument("--api-keys", action="store_true", help="Test API key management (native + Secrets Manager)")
+    parser.add_argument("--cron", action="store_true", help="Test cron schedule lifecycle (create, verify CRON# record, list, delete)")
     parser.add_argument("--reset", action="store_true", help="Reset session before sending")
     parser.add_argument("--reset-user", action="store_true", help="Full user reset (delete all records)")
     parser.add_argument("--tail-logs", action="store_true", help="Tail CloudWatch logs to verify lifecycle")
@@ -1238,6 +1564,10 @@ def main():
         ok = _cli_api_keys(cfg, args.tail_logs)
         sys.exit(0 if ok else 1)
 
+    if args.cron:
+        ok = _cli_cron(cfg, args.tail_logs)
+        sys.exit(0 if ok else 1)
+
     if args.conversation:
         ok = _cli_conversation(cfg, args.conversation, args.tail_logs)
         sys.exit(0 if ok else 1)
@@ -1248,7 +1578,7 @@ def main():
 
     if not any([args.health, args.send, args.conversation, args.subagent,
                 args.scoped_creds, args.skill_manage, args.api_keys,
-                args.reset, args.reset_user]):
+                args.cron, args.reset, args.reset_user]):
         parser.print_help()
         sys.exit(1)
 

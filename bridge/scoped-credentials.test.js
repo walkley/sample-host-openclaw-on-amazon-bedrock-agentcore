@@ -218,6 +218,39 @@ describe("buildSessionPolicy", () => {
     assert.equal(dynamoStmt.Resource, "*", "should fall back to wildcard");
   });
 
+  it("includes internalUserId in DynamoDB LeadingKeys when provided", () => {
+    const policy = buildSessionPolicy({
+      bucket: "my-bucket",
+      namespace: "telegram_12345",
+      actorId: "telegram:12345",
+      internalUserId: "user_abc123",
+      identityTableArn: "arn:aws:dynamodb:us-west-2:123456789012:table/openclaw-identity",
+    });
+
+    const parsed = JSON.parse(policy);
+    const dynamoStmt = parsed.Statement.find((s) => s.Sid === "DynamoDBIdentity");
+    assert.ok(dynamoStmt, "should have DynamoDB statement");
+    const leadingKeys = dynamoStmt.Condition["ForAllValues:StringLike"]["dynamodb:LeadingKeys"];
+    assert.ok(leadingKeys.includes("USER#telegram:12345"), "should include actorId-based PK");
+    assert.ok(leadingKeys.includes("CHANNEL#telegram:12345"), "should include channel PK");
+    assert.ok(leadingKeys.includes("USER#user_abc123"), "should include internal userId PK for CRON records");
+    assert.equal(leadingKeys.length, 3, "should have exactly 3 leading key patterns");
+  });
+
+  it("omits duplicate internalUserId when same as actorId", () => {
+    const policy = buildSessionPolicy({
+      bucket: "my-bucket",
+      namespace: "telegram_12345",
+      actorId: "telegram:12345",
+      internalUserId: "telegram:12345",
+    });
+
+    const parsed = JSON.parse(policy);
+    const dynamoStmt = parsed.Statement.find((s) => s.Sid === "DynamoDBIdentity");
+    const leadingKeys = dynamoStmt.Condition["ForAllValues:StringLike"]["dynamodb:LeadingKeys"];
+    assert.equal(leadingKeys.length, 2, "should not duplicate when internalUserId matches actorId");
+  });
+
   it("scopes EventBridge CRUD to schedule group schedules when provided", () => {
     const policy = buildSessionPolicy({
       bucket: "my-bucket",

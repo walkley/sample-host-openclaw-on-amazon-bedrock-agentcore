@@ -540,7 +540,7 @@ async function init(userId, actorId, channel) {
     if (process.env.EXECUTION_ROLE_ARN) {
       try {
         console.log(`[contract] Creating scoped S3 credentials for namespace=${namespace}...`);
-        const creds = await scopedCreds.createScopedCredentials(namespace);
+        const creds = await scopedCreds.createScopedCredentials(namespace, { internalUserId: userId });
         scopedCreds.writeCredentialFiles(creds, SCOPED_CREDS_DIR);
         workspaceSync.configureCredentials(creds);
         scopedCredsAvailable = true;
@@ -551,7 +551,7 @@ async function init(userId, actorId, channel) {
         credentialRefreshTimer = setInterval(async () => {
           try {
             console.log("[contract] Refreshing scoped S3 credentials...");
-            const refreshed = await scopedCreds.createScopedCredentials(namespace);
+            const refreshed = await scopedCreds.createScopedCredentials(namespace, { internalUserId: userId });
             scopedCreds.writeCredentialFiles(refreshed, SCOPED_CREDS_DIR);
             workspaceSync.configureCredentials(refreshed);
             console.log("[contract] Scoped S3 credentials refreshed");

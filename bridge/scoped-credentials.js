@@ -58,7 +58,7 @@ const FORWARDED_ENV_KEYS = [
  * @param {string} [opts.scheduleGroupArn] - EventBridge schedule group ARN (scopes scheduler access)
  * @returns {string} JSON policy document
  */
-function buildSessionPolicy({ bucket, namespace, actorId, cmkArn, eventbridgeRoleArn, identityTableArn, scheduleGroupArn, region, account }) {
+function buildSessionPolicy({ bucket, namespace, actorId, internalUserId, cmkArn, eventbridgeRoleArn, identityTableArn, scheduleGroupArn, region, account }) {
   if (!namespace || !VALID_NAMESPACE.test(namespace)) {
     throw new Error(
       `Invalid namespace "${namespace}" — must match ${VALID_NAMESPACE}`,
@@ -150,6 +150,11 @@ function buildSessionPolicy({ bucket, namespace, actorId, cmkArn, eventbridgeRol
               "dynamodb:LeadingKeys": [
                 `USER#${actorId}`,
                 `CHANNEL#${actorId}`,
+                // Internal userId PK — CRON# records and SESSION records
+                // are stored under USER#{internalUserId} (e.g. USER#user_abc123)
+                ...(internalUserId && internalUserId !== actorId
+                  ? [`USER#${internalUserId}`]
+                  : []),
               ]
             }
           },
@@ -196,6 +201,7 @@ function buildSessionPolicy({ bucket, namespace, actorId, cmkArn, eventbridgeRol
  * @param {string} namespace - User namespace (e.g. "telegram_12345")
  * @param {object} [opts] - Options
  * @param {object} [opts.stsClient] - Pre-configured STS client (for testing)
+ * @param {string} [opts.internalUserId] - Internal user ID (e.g. "user_abc123") for DynamoDB CRON#/SESSION access
  * @returns {Promise<{accessKeyId: string, secretAccessKey: string, sessionToken: string, expiration: Date}>}
  */
 async function createScopedCredentials(namespace, opts = {}) {
@@ -232,7 +238,8 @@ async function createScopedCredentials(namespace, opts = {}) {
   const actorId = namespace.replace(/_/, ":");
 
   const sessionPolicy = buildSessionPolicy({
-    bucket, namespace, actorId, cmkArn, eventbridgeRoleArn,
+    bucket, namespace, actorId, internalUserId: opts.internalUserId,
+    cmkArn, eventbridgeRoleArn,
     identityTableArn, scheduleGroupArn, region, account,
   });
 

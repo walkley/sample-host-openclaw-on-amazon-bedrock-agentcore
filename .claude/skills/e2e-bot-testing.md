@@ -31,6 +31,8 @@ export CDK_DEFAULT_REGION=ap-southeast-2
 | `pytest tests/e2e/bot_test.py -v -k subagent` | Sub-agent skill verification |
 | `pytest tests/e2e/bot_test.py -v -k ScopedCredentials` | Scoped S3 credentials (file ops) |
 | `pytest tests/e2e/bot_test.py -v -k TestApiKeyManagement` | API key storage (native + Secrets Manager) |
+| `pytest tests/e2e/bot_test.py -v -k TestSkillManagement` | ClawHub skill install/uninstall lifecycle |
+| `pytest tests/e2e/bot_test.py -v -k TestCronSchedule` | Cron schedule lifecycle + DynamoDB CRON# record verification |
 | `pytest tests/e2e/bot_test.py -v -k conversation` | Multi-turn conversation tests |
 | `pytest tests/e2e/bot_test.py -v` | All E2E tests |
 | `pytest -m "not e2e"` | Skip E2E tests in fast CI |
@@ -47,6 +49,8 @@ export CDK_DEFAULT_REGION=ap-southeast-2
 | `python -m tests.e2e.bot_test --subagent --tail-logs` | Sub-agent skill test |
 | `python -m tests.e2e.bot_test --scoped-creds --tail-logs` | Scoped credentials test |
 | `python -m tests.e2e.bot_test --api-keys --tail-logs` | API key management test (native + SM) |
+| `python -m tests.e2e.bot_test --skill-manage --tail-logs` | Skill management test (list, install, uninstall) |
+| `python -m tests.e2e.bot_test --cron --tail-logs` | Cron schedule lifecycle test (create, verify DynamoDB, list, delete) |
 
 ## Startup Phases and Timing
 
@@ -157,6 +161,60 @@ python -m tests.e2e.bot_test --api-keys --tail-logs
 
 **Test resets session** to force warm-up mode, since API key tools are lightweight agent tools (not OpenClaw skills).
 
+### Skill management verification (TestSkillManagement)
+
+Tests the clawhub-manage skill lifecycle: list installed skills, install a new skill, verify it appears, uninstall it, and verify it's gone. Runs during warm-up mode (lightweight agent) since the clawhub-manage tool is available immediately.
+
+```bash
+# Run skill management tests only
+pytest tests/e2e/bot_test.py -v -k TestSkillManagement
+
+# Ad-hoc CLI testing
+python -m tests.e2e.bot_test --skill-manage --tail-logs
+```
+
+**What the tests verify:**
+1. List pre-installed skills (baseline check — 5 ClawHub skills expected)
+2. Install a test skill (`hackernews` — lightweight, no API key)
+3. Verify the installed skill appears in the list
+4. Uninstall the test skill
+5. Verify the skill is removed from the list
+
+**Test resets session** to force warm-up mode. After install/uninstall, the skill changes take effect on the next session start (after idle timeout).
+
+### Cron schedule verification (TestCronSchedule)
+
+Tests the eventbridge-cron skill lifecycle and **critically verifies DynamoDB CRON# records are created under the correct partition key**. This test catches scoped credential misconfigurations where DynamoDB LeadingKeys exclude the internal userId — the exact bug that caused cron schedules to silently stop executing in March 2026.
+
+```bash
+# Run cron tests only
+pytest tests/e2e/bot_test.py -v -k TestCronSchedule
+
+# Ad-hoc CLI testing
+python -m tests.e2e.bot_test --cron --tail-logs
+```
+
+**What the tests verify:**
+1. Create a far-future one-time schedule (`cron(0 0 1 1 ? 2099)`) — never fires
+2. **CRON# DynamoDB record exists under `USER#{internalUserId}`** — the critical regression check
+3. EventBridge schedule exists with correct expression and state
+4. Bot can list schedules and see the test schedule (reads DynamoDB via scoped creds)
+5. Bot can delete the schedule
+6. CRON# DynamoDB record is cleaned up after deletion
+7. EventBridge schedule is cleaned up after deletion
+
+**Why this test matters:**
+The cron executor Lambda verifies schedule ownership by looking up `CRON#{scheduleId}` under `USER#{internalUserId}` (e.g., `USER#user_abc123`). If the scoped credentials only allow `USER#{actorId}` (e.g., `USER#telegram:12345`), the cron skill can create EventBridge schedules but silently fails to write the DynamoDB ownership record. Schedules appear to work but the Lambda rejects every execution with "Schedule not owned by user — skipping execution."
+
+**Test resets session** to start clean. Cleanup fixture removes stale test schedules from prior runs (both EventBridge and DynamoDB).
+
+| Troubleshooting | Cause | Fix |
+|----------------|-------|-----|
+| `test_cron_record_exists` fails | Scoped credentials DynamoDB LeadingKeys missing `USER#{internalUserId}` | Add `internalUserId` to `buildSessionPolicy()` in `scoped-credentials.js` |
+| `test_create_schedule` timeout | eventbridge-cron skill not in lightweight agent TOOLS array | Check `lightweight-agent.js` has `create_schedule` tool |
+| `test_list_schedules` shows empty | Scoped creds can't read `USER#{internalUserId}` CRON# records | Same fix as `test_cron_record_exists` |
+| `test_eventbridge_schedule_exists` fails | Scheduler IAM permissions missing | Check `scoped-credentials.js` includes `scheduler:CreateSchedule` |
+
 ## How It Works
 
 ### Architecture
@@ -204,8 +262,10 @@ The `AgentCore response body` line contains JSON: `{"response": "full text..."}`
 | `TestWarmupShim` | Warm-up footer present on cold start | ✓ | ✓ |
 | `TestFullStartup` | Full OpenClaw ready + phase timing | ✓ | ✓ |
 | `TestSubagent` | Sub-agent skill verification | | |
-| `TestApiKeyManagement` | API key storage (native + SM) | ✓ | |
 | `TestScopedCredentials` | S3 file ops via scoped STS creds | | |
+| `TestApiKeyManagement` | API key storage (native + SM) | ✓ | |
+| `TestSkillManagement` | ClawHub skill install/uninstall | ✓ | |
+| `TestCronSchedule` | Cron lifecycle + DynamoDB CRON# record | ✓ | |
 | `TestConversation` | Multi-turn scenarios | | |
 
 ### Conversation Scenarios
@@ -287,7 +347,14 @@ pytest tests/e2e/bot_test.py -v -k full_startup
 #    (Requires full OpenClaw; waits for startup if needed)
 pytest tests/e2e/bot_test.py -v -k subagent
 
-# 7. Conversations — multi-turn and rapid-fire
+# 7. Cron schedule — create, verify CRON# DynamoDB record, list, delete
+#    (Critical for scoped credentials validation)
+pytest tests/e2e/bot_test.py -v -k TestCronSchedule
+
+# 8. Skill management — install/uninstall ClawHub skills
+pytest tests/e2e/bot_test.py -v -k TestSkillManagement
+
+# 9. Conversations — multi-turn and rapid-fire
 pytest tests/e2e/bot_test.py -v -k conversation
 
 # Or run everything:
