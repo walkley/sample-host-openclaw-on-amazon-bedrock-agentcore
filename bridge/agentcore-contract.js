@@ -661,6 +661,9 @@ async function init(userId, actorId, channel) {
     currentUserId = userId;
     currentNamespace = namespace;
 
+    // Expose USER_ID so child processes (OpenClaw skill scripts) inherit it
+    process.env.USER_ID = actorId;
+
     // Write initial identity file for the proxy to read
     updateIdentityFile(actorId, channel);
 
