@@ -582,6 +582,10 @@ async function initBrowserSession(userId) {
       browserIdentifier,
       name: userId.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 64),
       sessionTimeoutSeconds: BROWSER_SESSION_TIMEOUT_SECONDS,
+      viewportConfiguration: {
+        width: 1280,
+        height: 720,
+      },
     }));
 
     const endpoint = response.streams?.automationStream?.streamEndpoint;
