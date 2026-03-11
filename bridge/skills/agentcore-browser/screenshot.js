@@ -1,12 +1,11 @@
 "use strict";
-const { connectBrowser, applyStealthHeaders, uploadScreenshotToS3 } = require("./common");
+const { connectBrowser, uploadScreenshotToS3 } = require("./common");
 
 async function browserScreenshot(args) {
   const { description } = args || {};
 
   try {
     const { page } = await connectBrowser();
-    await applyStealthHeaders(page);
     const imageBuffer = await page.screenshot({ type: "png", fullPage: false });
     const s3Key = await uploadScreenshotToS3(imageBuffer);
 

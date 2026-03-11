@@ -8,15 +8,20 @@ async function browserNavigate(args) {
   try {
     const { page } = await connectBrowser();
     await applyStealthHeaders(page);
-    await page.goto(url, { waitUntil: "commit", timeout: NAV_TIMEOUT_MS });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
     const title = await page.title();
 
     // Extract readable text — remove script/style noise
-    const content = await page.evaluate(() => {
-      const clone = document.cloneNode(true);
-      clone.querySelectorAll("script, style, noscript, iframe").forEach(el => el.remove());
-      return clone.body?.innerText || clone.body?.textContent || "";
-    });
+    let content = "";
+    try {
+      content = await page.evaluate(() => {
+        const clone = document.cloneNode(true);
+        clone.querySelectorAll("script, style, noscript, iframe").forEach(el => el.remove());
+        return clone.body?.innerText || clone.body?.textContent || "";
+      });
+    } catch (_) {
+      // Execution context may be destroyed during navigation — title is enough as fallback
+    }
 
     return JSON.stringify({
       url: page.url(),
